@@ -1,183 +1,244 @@
-// state.js — one job: the rules of Ember Pact, with no DOM in it at all.
-// A pure state object in, a list of events out, so the logic can be
-// play-tested headlessly as well as in the browser.
-import { buildDeck, comboFor, faceById } from './cards.js';
-import { mulberry32 } from './rng.js';
+// state.js — the rules engine of Scrapheap Showdown. Pure logic, no DOM.
+// A game is a plain object; every function below takes it and returns a list
+// of log lines describing what happened, so the renderer and the self-test
+// both read the same truth. The AI lives in ai.js and calls these same
+// functions, so a human and the rival play by identical rules.
+//
+// Core rules:
+//   - Both bots start at 30 Hull. Hull at 0 ends the game.
+//   - Each turn you gain Scrap: 3 on turn 1, +1 a turn, capped at 10.
+//   - You draw 2 cards at the start of your turn (hand cap 7).
+//   - Block soaks damage, then fades when your next turn starts.
+//   - WELD: play cards of 2+ different suits in one turn and the second suit
+//     lands a bonus +3 damage on the rival, once per turn.
+//   - HEAT: bolt cards add Heat. At 4+ Heat your bolts deal +1. At 6 Heat
+//     the bot overheats: it takes 3 damage and Heat resets to 0.
+//   - JUNK YARD: 3 face-up cards sit in the middle. Once per turn you may
+//     take one into your hand by paying its cost; the row refills from deck.
 
-export const START_LIFE = 30;
-export const START_HAND = 4;
-export const MAX_MANA = 10;
-export const MAX_HAND = 8;
+import { makeRng, shuffle } from './rng.js';
+import { buildDeck } from './cards.js';
 
-function newSide(deck) {
-  return {
-    life: START_LIFE,
-    mana: 0,
-    maxMana: 0,
-    shield: 0,
-    deck: deck.slice(),
-    hand: [],
-    discard: [],
-    playedThisTurn: [],
-  };
+export const MAX_HULL = 30;
+export const MAX_SCRAP = 10;
+export const HAND_CAP = 7;
+export const WELD_BONUS = 3;
+export const HEAT_BOOST_AT = 4;
+export const HEAT_OVERHEAT_AT = 6;
+export const OVERHEAT_DAMAGE = 3;
+
+/** One side of the duel: hull, block, scrap, heat, hand, deck, discard. */
+function makeSide(deck) {
+  return { hull: MAX_HULL, block: 0, scrap: 0, heat: 0, hand: [], deck, discard: [], suits: [], weldFired: false };
 }
 
-// Create a fresh game. seed drives the deck order and the AI's rolls.
-export function createGame(seed) {
-  const rand = mulberry32(seed);
+/** A fresh game. `seed` drives every shuffle and AI pick. */
+export function createGame(seed = 7) {
+  const rng = makeRng(seed);
+  const player = makeSide(shuffle(rng, buildDeck()));
+  const rival = makeSide(shuffle(rng, buildDeck()));
   const game = {
     seed,
+    rng,
     turn: 1,
-    phase: 'title',
-    player: newSide(buildDeck(rand)),
-    enemy: newSide(buildDeck(rand)),
+    phase: 'title', // title | play | won | lost
+    player,
+    rival,
+    junk: [],
     log: [],
-    aiIntent: null,
-    winner: null,
-    rand,
+    intent: null, // the rival's announced plan for its next turn
+    junkTaken: false,
+    stats: { turns: 0, damageDealt: 0, damageTaken: 0, cardsPlayed: 0, welds: 0, junkTaken: 0 },
   };
-  drawCards(game.player, START_HAND);
-  drawCards(game.enemy, START_HAND);
-  return game;
-}
-
-export function drawCards(side, count) {
-  const drawn = [];
-  for (let i = 0; i < count; i += 1) {
-    if (side.hand.length >= MAX_HAND) break;
-    const id = side.deck.shift();
-    if (id === undefined) break;
-    side.hand.push(id);
-    drawn.push(id);
-  }
-  return drawn;
-}
-
-function otherSide(game, side) {
-  return side === 'player' ? game.enemy : game.player;
-}
-
-function sideName(side) {
-  return side === 'player' ? 'You' : 'Rook';
-}
-
-// Damage first eats shield, then life. Returns the life actually lost.
-export function dealDamage(game, side, amount) {
-  const target = side === 'player' ? game.player : game.enemy;
-  let left = amount;
-  if (target.shield > 0) {
-    const blocked = Math.min(target.shield, left);
-    target.shield -= blocked;
-    left -= blocked;
-  }
-  target.life = Math.max(0, target.life - left);
-  return left;
-}
-
-export function healLife(game, side, amount) {
-  const target = side === 'player' ? game.player : game.enemy;
-  target.life = Math.min(START_LIFE, target.life + amount);
-}
-
-export function checkWinner(game) {
-  if (game.player.life <= 0 && game.enemy.life <= 0) {
-    game.phase = 'loss';
-    game.winner = 'enemy';
-  } else if (game.enemy.life <= 0) {
-    game.phase = 'win';
-    game.winner = 'player';
-  } else if (game.player.life <= 0) {
-    game.phase = 'loss';
-    game.winner = 'enemy';
-  }
-  return game.phase;
-}
-
-// Begin a side's turn: mana grows by one (up to the cap), refills, one
-// card is drawn, shield from last turn fades, combo memory clears.
-export function startTurn(game, side) {
-  const me = side === 'player' ? game.player : game.enemy;
-  me.maxMana = Math.min(MAX_MANA, me.maxMana + 1);
-  me.mana = me.maxMana;
-  me.shield = 0;
-  me.playedThisTurn = [];
-  me.comboFired = false;
-  const drawn = drawCards(me, 1);
-  return drawn;
-}
-
-// Play one card from a side's hand. Returns { ok, events } where events
-// are short strings for the battle log. Illegal plays return ok: false.
-export function playCard(game, side, handIndex) {
-  const me = side === 'player' ? game.player : game.enemy;
-  const face = faceById(me.hand[handIndex]);
-  if (!face) return { ok: false, events: ['No such card.'] };
-  if (me.mana < face.cost) return { ok: false, events: [`Not enough mana for ${face.name}.`] };
-  me.mana -= face.cost;
-  me.hand.splice(handIndex, 1);
-  me.discard.push(face.id);
-  me.playedThisTurn.push(face.element);
-  const events = [`${sideName(side)} played ${face.name}.`];
-  if (face.attack) {
-    const lost = dealDamage(game, side === 'player' ? 'enemy' : 'player', face.attack);
-    events.push(`${face.name} deals ${face.attack} (${lost} through shield).`);
-  }
-  if (face.shield) {
-    me.shield += face.shield;
-    events.push(`${sideName(side)} gains ${face.shield} shield.`);
-  }
-  if (face.heal) {
-    healLife(game, side, face.heal);
-    events.push(`${sideName(side)} mends ${face.heal} life.`);
-  }
-  if (face.draw) {
-    const drawn = drawCards(me, face.draw);
-    events.push(`${sideName(side)} draws ${drawn.length} card${drawn.length === 1 ? '' : 's'}.`);
-  }
-  // Combos fire once per turn, the moment the second element lands. The
-  // comboFired flag resets in startTurn, so a new turn can combo again.
-  const combo = comboFor(me.playedThisTurn);
-  if (combo && !me.comboFired) {
-    me.comboFired = true;
-    events.push(combo.text);
-    if (combo.bonusAttack) {
-      const lost = dealDamage(game, side === 'player' ? 'enemy' : 'player', combo.bonusAttack);
-      events.push(`Combo deals ${combo.bonusAttack} (${lost} through shield).`);
-    }
-    if (combo.bonusShield) {
-      me.shield += combo.bonusShield;
-      events.push(`${sideName(side)} gains ${combo.bonusShield} shield.`);
-    }
-    if (combo.bonusHeal) healLife(game, side, combo.bonusHeal);
-    if (combo.bonusDraw) {
-      const drawn = drawCards(me, combo.bonusDraw);
-      events.push(`${sideName(side)} draws ${drawn.length} from the combo.`);
-    }
-  }
-  checkWinner(game);
-  return { ok: true, events };
-}
-
-export function startGame(game) {
+  // Deal the opening hands and the junk row, then open turn 1.
+  drawCards(game, player, 4);
+  drawCards(game, rival, 4);
+  for (let i = 0; i < 3; i++) refillJunk(game);
+  startPlayerTurn(game);
   game.phase = 'play';
-  game.log = ['The pact is sealed. Your move — play a card, then end your turn.'];
-  startTurn(game, 'player');
   return game;
 }
 
-// A side may keep playing while it has mana and cards; the AI and the
-// end-turn button both call this to hand the turn over.
-export function endTurn(game) {
-  if (game.phase !== 'play') return [];
-  const events = [];
-  const drawn = startTurn(game, 'enemy');
-  if (drawn.length) events.push('Rook draws a card.');
-  return events;
+/** The scrap a side gains on `turn`: 3 on turn 1, +1 a turn, capped at 10. */
+export function scrapForTurn(turn) {
+  return Math.min(MAX_SCRAP, 2 + turn);
 }
 
-export function beginPlayerTurn(game) {
-  const drawn = startTurn(game, 'player');
-  game.turn += 1;
-  if (drawn.length) return ['You draw a card.'];
-  return ['Your deck is empty — no card drawn.'];
+/** Move cards from a side's deck into its hand, reshuffling the discard pile. */
+export function drawCards(game, side, count) {
+  const drawn = [];
+  for (let i = 0; i < count; i++) {
+    if (side.hand.length >= HAND_CAP) break;
+    if (side.deck.length === 0) {
+      if (side.discard.length === 0) break;
+      side.deck = shuffle(game.rng, side.discard);
+      side.discard = [];
+    }
+    const card = side.deck.pop();
+    side.hand.push(card);
+    drawn.push(card);
+  }
+  return drawn;
+}
+
+/** Fill an empty junk slot from the player's deck (the junk row is shared). */
+export function refillJunk(game) {
+  if (game.junk.length >= 3) return;
+  const deck = game.player.deck;
+  if (deck.length === 0) {
+    if (game.player.discard.length === 0) return;
+    game.player.deck = shuffle(game.rng, game.player.discard);
+    game.player.discard = [];
+  }
+  game.junk.push(game.player.deck.pop());
+}
+
+/** Open the player's turn: fresh block, fresh scrap, draw 2, reset trackers. */
+export function startPlayerTurn(game) {
+  const p = game.player;
+  p.block = 0;
+  p.scrap = scrapForTurn(game.turn);
+  p.suits = [];
+  p.weldFired = false;
+  game.junkTaken = false;
+  drawCards(game, p, 2);
+  game.stats.turns = game.turn;
+}
+
+/** Deal damage to a side, soaked by block first; returns the hull lost. */
+export function dealDamage(game, side, amount) {
+  if (amount <= 0) return 0;
+  const soaked = Math.min(side.block, amount);
+  side.block -= soaked;
+  const hullHit = amount - soaked;
+  side.hull = Math.max(0, side.hull - hullHit);
+  return hullHit;
+}
+
+/** The damage a bolt card deals right now (heat boosts it at 4+). */
+export function boltDamage(game, side, card) {
+  const boost = side.heat >= HEAT_BOOST_AT ? 1 : 0;
+  return card.dmg + boost;
+}
+
+/** Apply a card's effect. `side` plays it, `foe` receives the damage. */
+export function applyCard(game, side, foe, card) {
+  const lines = [];
+  side.scrap -= card.cost;
+  if (card.block) {
+    side.block += card.block;
+    lines.push(`${side === game.player ? 'RUSTY' : 'SCRAPJAW'} gains ${card.block} Block.`);
+  }
+  if (card.heal) {
+    const before = side.hull;
+    side.hull = Math.min(MAX_HULL, side.hull + card.heal);
+    lines.push(`${side === game.player ? 'RUSTY' : 'SCRAPJAW'} repairs ${side.hull - before} Hull.`);
+  }
+  if (card.vent) {
+    side.heat = Math.max(0, side.heat - card.vent);
+    lines.push(`Heat vented to ${side.heat}.`);
+  }
+  if (card.draw) {
+    const drawn = drawCards(game, side, card.draw);
+    lines.push(`${side === game.player ? 'RUSTY' : 'SCRAPJAW'} draws ${drawn.length}.`);
+  }
+  if (card.scrap) {
+    side.scrap = Math.min(MAX_SCRAP, side.scrap + card.scrap);
+    lines.push(`+${card.scrap} Scrap.`);
+  }
+  if (card.dmg) {
+    const amount = card.suit === 'bolt' ? boltDamage(game, side, card) : card.dmg;
+    const hit = dealDamage(game, foe, amount);
+    if (side === game.player) game.stats.damageDealt += hit;
+    else game.stats.damageTaken += hit;
+    lines.push(`${card.name} hits for ${amount} (${hit} through).`);
+  }
+  if (card.heat) {
+    side.heat += card.heat;
+    lines.push(`Heat rises to ${side.heat}.`);
+    if (side.heat >= HEAT_OVERHEAT_AT) {
+      const hit = dealDamage(game, side, OVERHEAT_DAMAGE);
+      side.heat = 0;
+      lines.push(`OVERHEAT! ${side === game.player ? 'RUSTY' : 'SCRAPJAW'} takes ${hit} damage. Heat reset.`);
+    }
+  }
+  return lines;
+}
+
+/** Play the card at `handIndex` from `side`'s hand. Returns log lines, or null if illegal. */
+export function playCard(game, side, foe, handIndex) {
+  if (game.phase !== 'play') return null;
+  const card = side.hand[handIndex];
+  if (!card || card.cost > side.scrap) return null;
+  side.hand.splice(handIndex, 1);
+  side.discard.push(card);
+  const lines = [`${side === game.player ? 'RUSTY' : 'SCRAPJAW'} plays ${card.name}.`];
+  lines.push(...applyCard(game, side, foe, card));
+  // WELD: a second suit in one turn lands a bonus hit, once per turn.
+  // Both sides weld — the rule is symmetric, so the rival is as dangerous
+  // with it as you are, and reading its suits matters as much as yours.
+  if (side === game.player) game.stats.cardsPlayed++;
+  if (!side.suits.includes(card.suit)) side.suits.push(card.suit);
+  if (!side.weldFired && side.suits.length >= 2) {
+    side.weldFired = true;
+    const hit = dealDamage(game, foe, WELD_BONUS);
+    const who = side === game.player ? 'RUSTY' : 'SCRAPJAW';
+    if (side === game.player) {
+      game.stats.welds++;
+      game.stats.damageDealt += hit;
+    } else {
+      game.stats.damageTaken += hit;
+    }
+    lines.push(`${who} WELDS! Two suits in one turn — +${WELD_BONUS} damage (${hit} through).`);
+  }
+  checkEnd(game);
+  return lines;
+}
+
+/** Take a junk card into the player's hand by paying its cost (once a turn). */
+export function takeJunk(game, junkIndex) {
+  if (game.phase !== 'play') return null;
+  if (game.junkTaken) return null;
+  const card = game.junk[junkIndex];
+  if (!card || card.cost > game.player.scrap) return null;
+  if (game.player.hand.length >= HAND_CAP) return null;
+  game.player.scrap -= card.cost;
+  game.player.hand.push(card);
+  game.junk.splice(junkIndex, 1);
+  game.junkTaken = true;
+  game.stats.junkTaken++;
+  refillJunk(game);
+  return [`RUSTY salvages ${card.name} from the Junk Yard.`];
+}
+
+/** Settle the game when a hull hits zero. */
+export function checkEnd(game) {
+  if (game.phase !== 'play') return;
+  if (game.rival.hull <= 0) {
+    game.phase = 'won';
+    game.log.push('SCRAPJAW is scrap! RUSTY wins the duel.');
+  } else if (game.player.hull <= 0) {
+    game.phase = 'lost';
+    game.log.push('RUSTY is scrap! SCRAPJAW wins the duel.');
+  }
+}
+
+/** A snapshot of the duel for the renderer and the screenshots. */
+export function summary(game) {
+  return {
+    turn: game.turn,
+    phase: game.phase,
+    playerHull: game.player.hull,
+    rivalHull: game.rival.hull,
+    playerBlock: game.player.block,
+    rivalBlock: game.rival.block,
+    scrap: game.player.scrap,
+    heat: game.player.heat,
+    handSize: game.player.hand.length,
+    rivalHandSize: game.rival.hand.length,
+    deckSize: game.player.deck.length,
+    junkSize: game.junk.length,
+    intent: game.intent,
+    stats: { ...game.stats },
+  };
 }

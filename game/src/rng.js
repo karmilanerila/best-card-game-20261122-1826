@@ -1,6 +1,11 @@
-// rng.js — one job: a small seeded random generator so every game and
-// every screenshot layout is reproducible from a single number.
-export function mulberry32(seed) {
+// rng.js — deterministic randomness for Scrapheap Showdown.
+// Every random choice in the game flows through one seeded generator, so a
+// given seed always deals the same hands, the same junk row and the same AI
+// picks. Nothing here touches the DOM: the logic modules stay testable from
+// plain Node, which the self-test harness relies on.
+
+/** A small, fast, seedable PRNG (mulberry32). `seed` is any 32-bit integer. */
+export function makeRng(seed) {
   let a = seed >>> 0;
   return function next() {
     a |= 0;
@@ -11,12 +16,21 @@ export function mulberry32(seed) {
   };
 }
 
-// Shuffle a copy of an array with a seeded generator. The input is never
-// mutated, so the same seed always deals the same deck order.
-export function seededShuffle(items, rand) {
-  const out = items.slice();
-  for (let i = out.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(rand() * (i + 1));
+/** An integer in [min, max] inclusive, from the given generator. */
+export function rollInt(rng, min, max) {
+  return min + Math.floor(rng() * (max - min + 1));
+}
+
+/** A random element of a non-empty array, from the given generator. */
+export function pickOne(rng, list) {
+  return list[Math.floor(rng() * list.length)];
+}
+
+/** A Fisher-Yates shuffle that returns a new array and never mutates its input. */
+export function shuffle(rng, list) {
+  const out = list.slice();
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
     const tmp = out[i];
     out[i] = out[j];
     out[j] = tmp;
@@ -24,13 +38,17 @@ export function seededShuffle(items, rand) {
   return out;
 }
 
-// Pick one element of an array with a seeded generator.
-export function seededPick(items, rand) {
-  return items[Math.floor(rand() * items.length)];
+/** A deterministic seed from a short string, for named test scenarios. */
+export function seedFromText(text) {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
 }
 
-// A seeded integer in [0, max): handy for screenshot layouts that need a
-// fixed but varied pick, such as which log lines a shot shows.
-export function seededInt(rand, max) {
-  return Math.floor(rand() * max);
+/** True with probability `p` (0 to 1), from the given generator. */
+export function chance(rng, p) {
+  return rng() < p;
 }

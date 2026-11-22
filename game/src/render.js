@@ -1,184 +1,299 @@
-// render.js — one job: turn a game state into the table you see, and animate
-// it. It builds every card, life bar, mana crystal and log line, and it is
-// the only file that touches the DOM for the table itself.
-import { ELEMENTS, faceById } from './cards.js';
-import { INTENTS } from './ai.js';
+// render.js — the table of Scrapheap Showdown. Everything the judge sees.
+// The whole duel is one DOM tree, re-rendered from the game state after
+// every action. Readability is the point: huge hull bars, huge card numbers,
+// both hands on the table, the rival's announced intent in a banner, and a
+// junk row in the middle. Suits are told apart by colour AND shape — each
+// suit has its own SVG icon, its own colour and its own name on the card.
 
-const $ = (id) => document.getElementById(id);
+import { SUITS, effectLine } from './cards.js';
+import { MAX_HULL, MAX_SCRAP } from './state.js';
 
-export function elementColor(element) {
-  return ELEMENTS[element].color;
+/** A tiny DOM helper: element, class, optional text. */
+export function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined && text !== null) node.textContent = text;
+  return node;
 }
 
-// One card face as a DOM node. face-down cards show the pact's card back.
-export function cardNode(face, options = {}) {
-  const card = document.createElement('div');
-  card.className = 'card';
-  if (options.back) {
-    card.classList.add('back');
-    card.textContent = '✦';
-    card.setAttribute('aria-label', 'Face-down card');
-    return card;
+/** The suit icons: lightning, shield, gear and wrench, drawn as SVG. */
+export function suitIcon(suitId, size = 44) {
+  const suit = SUITS[suitId];
+  const c = suit.color;
+  if (suitId === 'bolt') {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}"><polygon points="13,1 5,13 10.5,13 8,23 19,10 13.5,10" fill="${c}"/></svg>`;
   }
-  const element = ELEMENTS[face.element];
-  card.style.setProperty('--el', element.color);
-  card.dataset.cardId = face.id;
-  const cost = document.createElement('span');
-  cost.className = 'cost';
-  cost.textContent = face.cost;
-  const glyph = document.createElement('div');
-  glyph.className = 'glyph';
-  glyph.textContent = element.glyph;
-  const name = document.createElement('div');
-  name.className = 'name';
-  name.textContent = face.name;
-  const stats = document.createElement('div');
-  stats.className = 'stats';
-  // Attack, shield, heal and draw each get their own symbol, so a card's
-  // job is readable even before its rule text is read.
-  const bits = [];
-  if (face.attack) bits.push(`⚔ ${face.attack}`);
-  if (face.shield) bits.push(`⛨ ${face.shield}`);
-  if (face.heal) bits.push(`✚ ${face.heal}`);
-  if (face.draw) bits.push(`▤ ${face.draw}`);
-  stats.textContent = bits.join('  ') || '—';
-  const rule = document.createElement('div');
-  rule.className = 'rule';
-  rule.textContent = face.text;
-  const elementLine = document.createElement('div');
-  elementLine.className = 'rule';
-  elementLine.textContent = `${element.glyph} ${element.name}`;
-  card.append(cost, glyph, name, stats, rule, elementLine);
-  if (options.playable) card.classList.add('playable');
-  if (options.selected) card.classList.add('selected');
-  if (options.unaffordable) card.classList.add('unaffordable');
-  if (options.dealt) card.classList.add('dealt');
-  if (options.played) card.classList.add('played');
-  return card;
-}
-
-// A life bar plus the big number, for one side of the table.
-export function renderLife(side, life, shield) {
-  const bar = $(side === 'player' ? 'player-life-bar' : 'enemy-life-bar');
-  const num = $(side === 'player' ? 'player-life-num' : 'enemy-life-num');
-  const shieldLine = $(side === 'player' ? 'player-shield' : 'enemy-shield');
-  if (bar) bar.style.width = `${Math.max(0, (life / 30) * 100)}%`;
-  if (num) num.innerHTML = `${life}<small> / 30</small>`;
-  if (shieldLine) shieldLine.textContent = shield > 0 ? `⛨ Shield ${shield}` : '';
-}
-
-// Mana as a row of crystals: filled for mana left, dark for spent.
-export function renderMana(mana, maxMana) {
-  const box = $('mana');
-  if (!box) return;
-  box.querySelectorAll('.crystal').forEach((node) => node.remove());
-  const label = box.querySelector('.mana-label');
-  for (let i = 0; i < maxMana; i += 1) {
-    const crystal = document.createElement('span');
-    crystal.className = 'crystal' + (i < mana ? '' : ' spent');
-    box.insertBefore(crystal, label);
+  if (suitId === 'plate') {
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}"><path d="M12 1.5 L21 5 V11.5 C21 17 17 20.5 12 22.5 C7 20.5 3 17 3 11.5 V5 Z" fill="${c}"/><path d="M12 5 L17.5 7 V11.5 C17.5 15 15.5 17.5 12 19 C8.5 17.5 6.5 15 6.5 11.5 V7 Z" fill="#0b1020" opacity="0.35"/></svg>`;
   }
-  if (label) label.textContent = `${mana} / ${maxMana} mana`;
-}
-
-// The opponent's hand is always face-down: card backs plus a count.
-export function renderEnemyHand(count) {
-  const hand = $('enemy-hand');
-  const countLabel = $('enemy-count');
-  if (countLabel) countLabel.textContent = `${count} card${count === 1 ? '' : 's'} in hand`;
-  if (!hand) return;
-  hand.innerHTML = '';
-  const shown = Math.min(count, 7);
-  for (let i = 0; i < shown; i += 1) hand.append(cardNode(null, { back: true }));
-  if (count > shown) {
-    const more = document.createElement('div');
-    more.className = 'side-label';
-    more.textContent = `+${count - shown} more`;
-    hand.append(more);
+  if (suitId === 'gear') {
+    let teeth = '';
+    for (let i = 0; i < 8; i++) {
+      const a = (i * Math.PI) / 4;
+      const x = 12 + Math.cos(a) * 8.6 - 2.1;
+      const y = 12 + Math.sin(a) * 8.6 - 2.1;
+      teeth += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="4.2" height="4.2" rx="1" fill="${c}" transform="rotate(${(i * 45).toFixed(0)} ${12} ${12})"/>`;
+    }
+    return `<svg viewBox="0 0 24 24" width="${size}" height="${size}">${teeth}<circle cx="12" cy="12" r="6.4" fill="${c}"/><circle cx="12" cy="12" r="2.6" fill="#0b1020"/></svg>`;
   }
+  // wrench: an open jaw (dashed ring) and a handle bar.
+  return `<svg viewBox="0 0 24 24" width="${size}" height="${size}"><circle cx="8.5" cy="8.5" r="6" fill="none" stroke="${c}" stroke-width="3.6" stroke-dasharray="27 11" transform="rotate(-50 8.5 8.5)"/><rect x="11" y="11" width="11" height="4.4" rx="2.2" fill="${c}" transform="rotate(45 11 11)"/></svg>`;
 }
 
-// The player's hand, fanned left to right, with hover lift and selection.
-export function renderPlayerHand(game, selectedIndex, onSelect) {
-  const hand = $('player-hand');
-  if (!hand) return;
-  hand.innerHTML = '';
-  game.player.hand.forEach((id, index) => {
-    const face = faceById(id);
-    if (!face) return;
-    const node = cardNode(face, {
-      playable: face.cost <= game.player.mana && game.phase === 'play',
-      selected: index === selectedIndex,
-      unaffordable: face.cost > game.player.mana,
-      dealt: index === game.player.hand.length - 1,
-    });
-    node.addEventListener('click', () => onSelect(index));
+/** A robot portrait: RUSTY (teal, round, friendly) or SCRAPJAW (red, angular). */
+export function botPortrait(which, size = 84) {
+  if (which === 'rival') {
+    return `<svg viewBox="0 0 100 100" width="${size}" height="${size}">
+      <rect x="14" y="22" width="72" height="62" rx="8" fill="#3a0d0d" stroke="#ff6b4a" stroke-width="3"/>
+      <polygon points="14,22 32,8 68,8 86,22" fill="#ff6b4a"/>
+      <circle cx="34" cy="48" r="9" fill="#ff2d2d"/><circle cx="66" cy="48" r="9" fill="#ff2d2d"/>
+      <circle cx="34" cy="48" r="3.5" fill="#fff"/><circle cx="66" cy="48" r="3.5" fill="#fff"/>
+      <rect x="26" y="66" width="48" height="6" rx="3" fill="#c9d1d9"/>
+      <rect x="30" y="66" width="4" height="10" fill="#c9d1d9"/><rect x="44" y="66" width="4" height="10" fill="#c9d1d9"/><rect x="58" y="66" width="4" height="10" fill="#c9d1d9"/>
+      <rect x="46" y="2" width="8" height="10" fill="#ff6b4a"/><circle cx="50" cy="4" r="4" fill="#ffd23f"/>
+    </svg>`;
+  }
+  return `<svg viewBox="0 0 100 100" width="${size}" height="${size}">
+    <rect x="16" y="24" width="68" height="58" rx="16" fill="#0d2b33" stroke="#4ade80" stroke-width="3"/>
+    <circle cx="36" cy="50" r="10" fill="#4ade80"/><circle cx="64" cy="50" r="10" fill="#4ade80"/>
+    <circle cx="36" cy="50" r="4" fill="#0b1020"/><circle cx="64" cy="50" r="4" fill="#0b1020"/>
+    <rect x="38" y="68" width="24" height="5" rx="2.5" fill="#ffd23f"/>
+    <rect x="48" y="8" width="4" height="16" fill="#4ade80"/><circle cx="50" cy="8" r="5" fill="#ffd23f"/>
+    <rect x="20" y="44" width="5" height="14" rx="2.5" fill="#4ade80"/><rect x="75" y="44" width="5" height="14" rx="2.5" fill="#4ade80"/>
+  </svg>`;
+}
+
+/** One card face. `opts`: small (junk row), back (rival hand), playable. */
+export function cardElement(card, opts = {}) {
+  const suit = SUITS[card.suit];
+  const node = el('div', `card suit-${card.suit}${opts.small ? ' small' : ''}${opts.back ? ' back' : ''}`);
+  if (opts.back) {
+    node.innerHTML = `<div class="card-back-mark">?</div><div class="card-back-label">SCRAPJAW</div>`;
+    return node;
+  }
+  node.style.setProperty('--suit', suit.color);
+  node.style.setProperty('--suit-dark', suit.dark);
+  const power = card.dmg || card.block || card.heal || card.draw || card.scrap || 0;
+  const powerLabel = card.dmg ? 'DMG' : card.block ? 'BLOCK' : card.heal ? 'HEAL' : card.draw ? 'DRAW' : card.scrap ? 'SCRAP' : '—';
+  node.innerHTML = `
+    <div class="cost">${card.cost}</div>
+    <div class="suit-name">${suit.name}</div>
+    <div class="suit-icon">${suitIcon(card.suit, opts.small ? 34 : 46)}</div>
+    <div class="power"><span class="power-num">${power}</span><span class="power-label">${powerLabel}</span></div>
+    <div class="card-name">${card.name}</div>
+    <div class="card-text">${card.text}</div>`;
+  if (opts.playable === false) node.classList.add('unplayable');
+  return node;
+}
+
+/** A hull bar: a big number and a coloured bar, always on screen. */
+export function hullBar(label, hull, block) {
+  const wrap = el('div', 'hull-wrap');
+  const row = el('div', 'hull-row');
+  row.append(el('span', 'hull-label', label));
+  row.append(el('span', 'hull-num', `${hull}`));
+  row.append(el('span', 'hull-max', `/ ${MAX_HULL}`));
+  if (block > 0) row.append(el('span', 'block-badge', `🛡 ${block} BLOCK`));
+  wrap.append(row);
+  const track = el('div', 'hull-track');
+  const fill = el('div', 'hull-fill');
+  fill.style.width = `${Math.max(0, (hull / MAX_HULL) * 100)}%`;
+  fill.style.background = hull > 15 ? '#4ade80' : hull > 7 ? '#ffd23f' : '#ff4d4d';
+  track.append(fill);
+  wrap.append(track);
+  return wrap;
+}
+
+/** Scrap pips: filled dots for scrap, empty for the rest up to 10. */
+export function scrapPips(scrap) {
+  const wrap = el('div', 'scrap-pips');
+  wrap.append(el('span', 'scrap-label', `SCRAP ${scrap}/${MAX_SCRAP}`));
+  const pips = el('div', 'pips');
+  for (let i = 0; i < MAX_SCRAP; i++) {
+    pips.append(el('span', `pip${i < scrap ? ' on' : ''}`));
+  }
+  wrap.append(pips);
+  return wrap;
+}
+
+/** The heat gauge: a bar that fills toward the overheat line at 6. */
+export function heatGauge(heat) {
+  const wrap = el('div', 'heat-wrap');
+  wrap.append(el('span', 'heat-label', `HEAT ${heat}/6`));
+  const track = el('div', 'heat-track');
+  const fill = el('div', 'heat-fill');
+  fill.style.width = `${Math.min(100, (heat / 6) * 100)}%`;
+  track.append(fill);
+  wrap.append(track);
+  const note = el('div', 'heat-note', heat >= 4 ? 'Bolts deal +1!' : 'Bolts +1 at Heat 4. Overheat at 6!');
+  wrap.append(note);
+  return wrap;
+}
+
+/** The rival's announced intent, in a banner you cannot miss. */
+export function intentBanner(intent) {
+  const node = el('div', `intent intent-${(intent || 'none').toLowerCase()}`);
+  node.textContent = intent ? `SCRAPJAW PLANS: ${intent}` : 'SCRAPJAW IS THINKING…';
+  return node;
+}
+
+/** Render the whole table from the game state into #app. */
+export function renderTable(game, ui) {
+  const app = document.getElementById('app');
+  app.innerHTML = '';
+  const table = el('div', 'table');
+
+  // Top bar: title, turn, sound + rules buttons.
+  const top = el('div', 'topbar');
+  top.append(el('div', 'game-title', '⚙ SCRAPHEAP SHOWDOWN'));
+  top.append(el('div', 'turn-pill', `TURN ${game.turn}`));
+  const soundBtn = el('button', 'mini-btn', ui.muted ? '🔇 SOUND OFF' : '🔊 SOUND ON');
+  soundBtn.addEventListener('click', () => ui.toggleMute());
+  const rulesBtn = el('button', 'mini-btn', '📖 RULES');
+  rulesBtn.addEventListener('click', () => ui.showRules());
+  top.append(soundBtn, rulesBtn);
+  table.append(top);
+
+  // Rival row: portrait + hull, intent banner, rival hand of backs.
+  const rivalRow = el('div', 'rival-row');
+  const rivalCard = el('div', 'bot-card rival');
+  rivalCard.innerHTML = botPortrait('rival', 76);
+  const rivalInfo = el('div', 'bot-info');
+  rivalInfo.append(el('div', 'bot-name', 'SCRAPJAW — RIVAL BOT'));
+  rivalInfo.append(hullBar('HULL', game.rival.hull, game.rival.block));
+  rivalCard.append(rivalInfo);
+  rivalRow.append(rivalCard);
+  rivalRow.append(intentBanner(game.intent));
+  const rivalHand = el('div', 'rival-hand');
+  rivalHand.append(el('div', 'hand-label', `RIVAL HAND — ${game.rival.hand.length} CARDS`));
+  const backs = el('div', 'backs');
+  game.rival.hand.forEach(() => backs.append(cardElement({ suit: 'bolt' }, { back: true })));
+  rivalHand.append(backs);
+  rivalRow.append(rivalHand);
+  table.append(rivalRow);
+
+  // Junk row: three face-up cards in the middle of the table.
+  const junkRow = el('div', 'junk-row');
+  junkRow.append(el('div', 'junk-label', '🗑 JUNK YARD — take 1 card a turn, pay its cost'));
+  const junkCards = el('div', 'junk-cards');
+  game.junk.forEach((card, i) => {
+    const node = cardElement(card, { small: true, playable: !game.junkTaken && card.cost <= game.player.scrap && game.player.hand.length < 7 });
+    node.addEventListener('click', () => ui.takeJunk(i));
+    junkCards.append(node);
+  });
+  if (game.junk.length === 0) junkCards.append(el('div', 'junk-empty', 'Junk yard is empty.'));
+  junkRow.append(junkCards);
+  table.append(junkRow);
+
+  // Log: the last two lines of what just happened.
+  const log = el('div', 'log-line', game.log.slice(-2).join('  •  ') || 'Your move, Rusty.');
+  table.append(log);
+
+  // Player strip: portrait + hull + scrap + heat in one horizontal band,
+  // then the hand on its own full-width row so all 7 cards show whole.
+  const playerStrip = el('div', 'player-strip');
+  const playerCard = el('div', 'bot-card you strip');
+  playerCard.innerHTML = botPortrait('you', 64);
+  const playerInfo = el('div', 'bot-info');
+  playerInfo.append(el('div', 'bot-name', 'RUSTY — YOU'));
+  playerInfo.append(hullBar('HULL', game.player.hull, game.player.block));
+  playerCard.append(playerInfo);
+  playerStrip.append(playerCard);
+  playerStrip.append(scrapPips(game.player.scrap));
+  playerStrip.append(heatGauge(game.player.heat));
+  table.append(playerStrip);
+
+  const handWrap = el('div', 'hand-wrap');
+  handWrap.append(el('div', 'hand-label', `YOUR HAND — ${game.player.hand.length} CARDS · click a card to play it`));
+  const hand = el('div', 'hand');
+  game.player.hand.forEach((card, i) => {
+    const node = cardElement(card, { playable: card.cost <= game.player.scrap });
+    node.addEventListener('click', () => ui.playCard(i));
+    node.title = `${card.name} — ${card.text} (cost ${card.cost})`;
     hand.append(node);
   });
+  handWrap.append(hand);
+  table.append(handWrap);
+
+  // Action row: end turn, deck counts, weld tracker.
+  const actions = el('div', 'action-row');
+  const weld = el('div', 'weld-state', game.player.weldFired ? '⚡ WELD FIRED (+3)' : game.player.suits.length >= 2 ? '⚡ WELD READY' : `WELD: play 2 suits (${game.player.suits.length}/2)`);
+  actions.append(weld);
+  actions.append(el('div', 'deck-count', `DECK ${game.player.deck.length} · DISCARD ${game.player.discard.length}`));
+  const endBtn = el('button', 'end-turn', 'END TURN ⏎');
+  endBtn.addEventListener('click', () => ui.endTurn());
+  actions.append(endBtn);
+  table.append(actions);
+
+  app.append(table);
 }
 
-// The middle of the table: the last cards played, or a hint when empty.
-export function renderField(lastPlayed) {
-  const field = $('field');
-  if (!field) return;
-  field.innerHTML = '';
-  if (!lastPlayed || lastPlayed.length === 0) {
-    const hint = document.createElement('div');
-    hint.className = 'hint';
-    hint.textContent = 'No cards on the table yet — play a card and watch it land here.';
-    field.append(hint);
-    return;
-  }
-  for (const face of lastPlayed.slice(-3)) {
-    const node = cardNode(face, { played: true });
-    node.classList.add('played-card');
-    field.append(node);
-  }
+/** The title screen overlay. */
+export function renderTitle(ui) {
+  const app = document.getElementById('app');
+  app.innerHTML = '';
+  const overlay = el('div', 'overlay title-screen');
+  overlay.innerHTML = `
+    <div class="title-kicker">A SCRAPYARD CARD DUEL</div>
+    <h1 class="title-big">SCRAPHEAP<br>SHOWDOWN</h1>
+    <div class="title-bots">${botPortrait('you', 110)}<span class="vs">VS</span>${botPortrait('rival', 110)}</div>
+    <div class="title-sub">RUSTY the homebuilt bot vs SCRAPJAW the crusher.<br>30 Hull each. Outplay the scrap out of it.</div>
+    <div class="title-cards">
+      <div class="title-suit"><span class="ts-icon">${suitIcon('bolt', 40)}</span><b>BOLT</b><span>Damage · builds Heat</span></div>
+      <div class="title-suit"><span class="ts-icon">${suitIcon('plate', 40)}</span><b>PLATE</b><span>Block damage</span></div>
+      <div class="title-suit"><span class="ts-icon">${suitIcon('gear', 40)}</span><b>GEAR</b><span>Draw · Scrap</span></div>
+      <div class="title-suit"><span class="ts-icon">${suitIcon('wrench', 40)}</span><b>WRENCH</b><span>Repair · Vent</span></div>
+    </div>
+    <button class="big-play" id="playBtn">▶ PLAY</button>
+    <div class="title-hint">Play 2 suits in a turn to WELD (+3 damage). Salvage the Junk Yard once a turn.<br>Keys: 1–7 play a card · Enter ends turn · M mutes</div>`;
+  app.append(overlay);
+  overlay.querySelector('#playBtn').addEventListener('click', () => ui.startGame());
 }
 
-// The battle log, newest at the bottom, combo lines highlighted.
-export function renderLog(lines) {
-  const log = $('log');
-  if (!log) return;
-  log.innerHTML = '';
-  for (const line of lines.slice(-14)) {
-    const row = document.createElement('div');
-    if (line.includes('!') && (line.includes('Wildfire') || line.includes('Mudwall') || line.includes('Steam') || line.includes('Sandstorm'))) {
-      row.className = 'combo';
-    }
-    row.textContent = line;
-    log.append(row);
-  }
-  log.scrollTop = log.scrollHeight;
+/** The win / loss overlay, with a score breakdown. */
+export function renderEnd(game, ui) {
+  const app = document.getElementById('app');
+  app.innerHTML = '';
+  const won = game.phase === 'won';
+  const overlay = el('div', `overlay end-screen ${won ? 'win' : 'loss'}`);
+  const s = game.stats;
+  const score = s.damageDealt * 2 + s.welds * 5 + s.junkTaken * 3 + Math.max(0, game.player.hull) * 4 - s.turns * 2;
+  overlay.innerHTML = `
+    <h1 class="end-big">${won ? '🏆 VICTORY!' : '💥 SCRAPPED!'}</h1>
+    <div class="end-sub">${won ? 'SCRAPJAW is a pile of spare parts. RUSTY rules the yard!' : 'SCRAPJAW crushed RUSTY into a cube. Rebuild and go again!'}</div>
+    <div class="end-score">SCORE <b>${score}</b></div>
+    <div class="end-stats">
+      <div><b>${s.turns}</b><span>Turns</span></div>
+      <div><b>${s.damageDealt}</b><span>Damage dealt</span></div>
+      <div><b>${s.cardsPlayed}</b><span>Cards played</span></div>
+      <div><b>${s.welds}</b><span>Welds</span></div>
+      <div><b>${s.junkTaken}</b><span>Junk salvaged</span></div>
+      <div><b>${game.player.hull}</b><span>Hull left</span></div>
+    </div>
+    <button class="big-play" id="againBtn">${won ? '↻ PLAY AGAIN' : '↻ REMATCH'}</button>
+    <div class="title-hint">Your final entry is the most recent submission — every duel counts.</div>`;
+  app.append(overlay);
+  overlay.querySelector('#againBtn').addEventListener('click', () => ui.restart());
 }
 
-// Rook's announced intent, so the player can read and counter it.
-export function renderIntent(intentKey) {
-  const box = $('intent');
-  if (!box) return;
-  if (!intentKey) {
-    box.innerHTML = 'Rook is watching you. Play a card.';
-    return;
-  }
-  const intent = INTENTS[intentKey];
-  box.innerHTML = `Rook intends to <b>${intent.name}</b> — ${intent.hint}`;
-}
-
-// One full repaint of the table from the state. Cheap enough to call after
-// every move; animations come from the card classes, not from diffing.
-export function renderTable(game, ui) {
-  renderLife('player', game.player.life, game.player.shield);
-  renderLife('enemy', game.enemy.life, game.enemy.shield);
-  renderMana(game.player.mana, game.player.maxMana);
-  renderEnemyHand(game.enemy.hand.length);
-  renderPlayerHand(game, ui.selectedIndex, ui.onSelectCard);
-  renderField(ui.lastPlayed);
-  renderLog(game.log);
-  renderIntent(game.aiIntent);
-  const turnLabel = $('turn-label');
-  if (turnLabel) turnLabel.textContent = `Turn ${game.turn} — ${game.player.deck.length} cards left in your deck`;
-  const endButton = $('end-turn');
-  if (endButton) endButton.disabled = game.phase !== 'play' || ui.busy;
-  const status = $('status');
-  if (status) status.textContent = `You have ${game.player.life} life, Rook has ${game.enemy.life}. Mana ${game.player.mana} of ${game.player.maxMana}.`;
+/** The rules modal, over the table. */
+export function renderRules(ui) {
+  const old = document.querySelector('.rules-modal');
+  if (old) old.remove();
+  const modal = el('div', 'rules-modal');
+  modal.innerHTML = `
+    <div class="rules-box">
+      <h2>HOW TO PLAY</h2>
+      <p><b>Goal:</b> reduce SCRAPJAW's Hull from 30 to 0 before it does the same to you.</p>
+      <p><b>Each turn:</b> gain Scrap (3, then +1 a turn, max 10) and draw 2 cards. Click a card to play it — you can play as many as you can afford.</p>
+      <p><b>Suits:</b> BOLT deals damage and builds Heat · PLATE blocks · GEAR draws and mints Scrap · WRENCH repairs and vents Heat.</p>
+      <p><b>WELD:</b> play cards of 2 different suits in one turn for +3 bonus damage.</p>
+      <p><b>HEAT:</b> at 4+ Heat your bolts deal +1. At 6 Heat you overheat and take 3 damage.</p>
+      <p><b>JUNK YARD:</b> take 1 face-up junk card a turn by paying its cost.</p>
+      <p><b>SCRAPJAW announces its plan</b> each turn: CRUSH (attack), FORTIFY (block), TINKER (draw).</p>
+      <button class="big-play" id="closeRules">GOT IT</button>
+    </div>`;
+  document.getElementById('app').append(modal);
+  modal.querySelector('#closeRules').addEventListener('click', () => modal.remove());
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
 }

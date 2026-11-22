@@ -1,84 +1,85 @@
-// ai.js — one job: how Rook the Cinder Fox thinks, out loud enough to read.
-// Rook picks one readable intent each turn — STRIKE, GUARD or SURGE —
-// announces it, then plays to match it. A player who reads the intent can
-// answer it: shield against a strike, press the attack against a guard.
-import { faceById } from './cards.js';
-import { playCard } from './state.js';
+// ai.js — SCRAPJAW, the rival bot. It announces its intent, then plays by
+// the same rules as the player (same engine, same card costs), so its
+// choices can be read and countered: block when it says CRUSH, hit hard
+// when it says FORTIFY, and grab the junk row when it says TINKER.
+//
+// Intents:
+//   CRUSH    — play damage cards (bolt first, highest damage per scrap)
+//   FORTIFY  — play block and repair cards
+//   TINKER   — play draw/scrap cards, then take a junk card if it can
+// The pick is weighted by the state: a hurt rival fortifies, a rich rival
+// tinkers, and a rival staring at a weak player crushes.
 
-export const INTENTS = {
-  strike: { name: 'STRIKE', hint: 'Rook bares its teeth — shield up or strike first!' },
-  guard: { name: 'GUARD', hint: 'Rook curls behind its wall — press the attack!' },
-  surge: { name: 'SURGE', hint: 'Rook gathers the wind — break its combo!' },
-};
+import { pickOne } from './rng.js';
+import { playCard, drawCards } from './state.js';
 
-// Choose the intent from the board, not from a coin flip alone: a hurt
-// Rook guards, a Rook that smells blood strikes, otherwise it surges.
+export const INTENTS = ['CRUSH', 'FORTIFY', 'TINKER'];
+
+/** Pick the rival's intent for its next turn, from the state of the duel. */
 export function chooseIntent(game) {
-  const rook = game.enemy;
-  const you = game.player;
-  if (rook.life <= 12 && rook.hand.some((id) => {
-    const face = faceById(id);
-    return face && (face.heal > 0 || face.shield > 0);
-  })) return 'guard';
-  if (you.life <= 10) return 'strike';
-  const roll = game.rand();
-  if (roll < 0.45) return 'strike';
-  if (roll < 0.75) return 'surge';
-  return 'guard';
+  const rival = game.rival;
+  const player = game.player;
+  // A rival on the ropes turtles up.
+  if (rival.hull <= 10) return pickOne(game.rng, ['FORTIFY', 'FORTIFY', 'CRUSH']);
+  // A rival facing a nearly-dead player goes for the kill.
+  if (player.hull <= 8) return pickOne(game.rng, ['CRUSH', 'CRUSH', 'TINKER']);
+  // A rival with a fat hand tinkers into more options.
+  if (rival.hand.length >= 6) return pickOne(game.rng, ['TINKER', 'CRUSH', 'FORTIFY']);
+  return pickOne(game.rng, INTENTS);
 }
 
-// Score one card for one intent. Damage is king on a strike, defence on a
-// guard, draw and cheap plays on a surge. Mana efficiency always matters.
-export function scoreCardForIntent(face, intent, game) {
-  let score = 0;
-  if (intent === 'strike') {
-    score += face.attack * 3;
-    score += face.draw * 1;
-    score -= face.heal * 0.5;
-    score -= face.shield * 0.5;
-  } else if (intent === 'guard') {
-    score += face.shield * 3;
-    score += face.heal * 3;
-    score += face.attack * 1;
-  } else {
-    score += face.draw * 4;
-    score += face.attack * 2;
-    score += face.shield * 1;
-    score += face.heal * 1;
-  }
-  score -= face.cost * 0.6;
-  // A killing blow is always worth taking, whatever the plan was.
-  if (face.attack >= game.player.life) score += 50;
-  return score;
+/** Rank the rival's playable cards for an intent: best value first. */
+function rankForIntent(hand, scrap, intent) {
+  const playable = hand
+    .map((card, index) => ({ card, index }))
+    .filter((entry) => entry.card.cost <= scrap);
+  const valueOf = (card) => {
+    if (intent === 'CRUSH') return card.dmg * 2 + card.draw * 0.5 - card.cost;
+    if (intent === 'FORTIFY') return card.block * 2 + card.heal * 2 - card.cost;
+    return card.draw * 2 + card.scrap * 2 + card.heal - card.cost;
+  };
+  return playable.sort((a, b) => valueOf(b.card) - valueOf(a.card));
 }
 
-// Play Rook's turn: keep playing the best-scoring affordable card for the
-// intent until mana runs out or nothing scores above zero. Returns the
-// events for the log, in play order.
-export function takeEnemyTurn(game, intent) {
-  const events = [];
-  const rook = game.enemy;
-  for (let step = 0; step < 6; step += 1) {
-    if (game.phase !== 'play') break;
-    let bestIndex = -1;
-    let bestScore = 0;
-    rook.hand.forEach((id, index) => {
-      const face = faceById(id);
-      if (!face || face.cost > rook.mana) return;
-      const score = scoreCardForIntent(face, intent, game);
-      if (score > bestScore) {
-        bestScore = score;
-        bestIndex = index;
-      }
-    });
-    if (bestIndex < 0) break;
-    const face = faceById(rook.hand[bestIndex]);
-    // The same playCard rule as the player's, so the AI and the player can
-    // never drift apart: one rules function serves both sides.
-    const result = playCard(game, 'enemy', bestIndex);
-    if (!result.ok) break;
-    events.push(...result.events);
-    if (face && face.attack >= 0 && game.phase !== 'play') break;
+/** The rival's whole turn: announce, play up to 3 cards, maybe salvage. */
+export function takeRivalTurn(game) {
+  const lines = [];
+  const rival = game.rival;
+  rival.block = 0;
+  rival.scrap = Math.min(10, 2 + game.turn);
+  rival.suits = [];
+  rival.weldFired = false;
+  const drawn = drawCards(game, rival, 2);
+  if (drawn.length) lines.push(`SCRAPJAW draws ${drawn.length}.`);
+  game.intent = chooseIntent(game);
+  lines.push(`SCRAPJAW plans: ${game.intent}.`);
+  // Play up to 4 cards that fit the intent, best value first.
+  let played = 0;
+  while (played < 4 && game.phase === 'play') {
+    const ranked = rankForIntent(rival.hand, rival.scrap, game.intent);
+    if (ranked.length === 0) break;
+    const entry = ranked[0];
+    const result = playCard(game, rival, game.player, entry.index);
+    if (!result) break;
+    lines.push(...result);
+    played++;
   }
-  return events;
+  // TINKER rivals also salvage from the junk yard when they can afford it.
+  if (game.intent === 'TINKER' && game.phase === 'play') {
+    const affordable = game.junk.findIndex((card) => card.cost <= rival.scrap);
+    if (affordable >= 0 && rival.hand.length < 7) {
+      const card = game.junk[affordable];
+      rival.scrap -= card.cost;
+      rival.hand.push(card);
+      game.junk.splice(affordable, 1);
+      lines.push(`SCRAPJAW salvages ${card.name} from the Junk Yard.`);
+    }
+  }
+  if (played === 0) lines.push('SCRAPJAW passes, holding its scrap.');
+  return lines;
+}
+
+/** How many cards the rival would play this turn, for the self-test. */
+export function rivalPlaysAtLeast(game) {
+  return rankForIntent(game.rival.hand, game.rival.scrap, game.intent ?? 'CRUSH').length > 0;
 }

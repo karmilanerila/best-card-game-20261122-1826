@@ -1,99 +1,14 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ember Pact — a card duel of fire, tide, gale and stone</title>
-<link rel="stylesheet" href="./src/style.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scrapheap Showdown — a scrapyard card duel</title>
+  <link rel="stylesheet" href="src/style.css">
 </head>
 <body>
-<div id="app">
-
-  <!-- Title screen: the cover shot is taken from this overlay. -->
-  <div id="title-screen" class="overlay">
-    <h1><span class="fire">EMBER</span> PACT</h1>
-    <p class="tagline">Four elements. One pact. Outplay Rook the Cinder Fox — spend your
-    mana, chain your elements into combos, and take its thirty life before it takes yours.</p>
-    <div class="legend">
-      <span><b style="color:#ff6a2a">▲</b> Ember — raw damage</span>
-      <span><b style="color:#5aa9ff">●</b> Tide — damage and healing</span>
-      <span><b style="color:#3ecfa4">◆</b> Gale — damage and draw</span>
-      <span><b style="color:#e8a83c">■</b> Stone — shields and bulk</span>
-    </div>
-    <button id="start-button">Seal the Pact — Play</button>
-    <p class="keys">Mouse: click a card to select it, click again to play · Keyboard:
-    <kbd>1</kbd>–<kbd>7</kbd> or <kbd>←</kbd><kbd>→</kbd> select · <kbd>Enter</kbd> play · <kbd>E</kbd> end turn ·
-    <kbd>M</kbd> mute · <kbd>R</kbd> play again</p>
-  </div>
-
-  <!-- Win screen: the flourish. -->
-  <div id="win-screen" class="overlay win hidden">
-    <p class="big">🏆</p>
-    <h1>THE PACT IS YOURS</h1>
-    <p class="score-line" id="win-score"></p>
-    <p class="tagline">Rook bows its ember head. The four elements answer to you now —
-    Ember, Tide, Gale and Stone, bound in one pact.</p>
-    <button id="again-win">Play Again</button>
-    <p class="keys">Press <kbd>R</kbd> to play again</p>
-  </div>
-
-  <!-- Loss screen. -->
-  <div id="loss-screen" class="overlay loss hidden">
-    <p class="big">🥀</p>
-    <h1>THE PACT IS BROKEN</h1>
-    <p class="score-line" id="loss-score"></p>
-    <p class="tagline">Rook the Cinder Fox keeps your ember. Study its intent, shield
-    against its strikes, and come back for the rematch.</p>
-    <button id="again-loss">Rematch</button>
-    <p class="keys">Press <kbd>R</kbd> for a rematch</p>
-  </div>
-
-  <!-- The table: opponent on top, field in the middle, your hand below. -->
-  <div id="table" class="hidden">
-    <div class="row">
-      <div class="side-label">
-        <h2>🦊 Rook the Cinder Fox</h2>
-        <div class="bar"><i id="enemy-life-bar" style="width:100%"></i></div>
-        <div class="life-num" id="enemy-life-num">30<small> / 30</small></div>
-        <div class="shields" id="enemy-shield"></div>
-      </div>
-      <div id="intent">Rook is watching you. Play a card.</div>
-      <div class="side-label" style="text-align:right">
-        <div class="sub">Rook's hand</div>
-        <div class="sub" id="enemy-count"></div>
-      </div>
-    </div>
-    <div class="row">
-      <div class="hand enemy" id="enemy-hand" aria-label="Rook's hand, face down"></div>
-    </div>
-    <div id="middle">
-      <div id="field"></div>
-      <div id="log" aria-label="Battle log"></div>
-    </div>
-    <div class="row">
-      <div class="side-label">
-        <h2>You — the Pact-Binder</h2>
-        <div class="bar"><i id="player-life-bar" style="width:100%"></i></div>
-        <div class="life-num" id="player-life-num">30<small> / 30</small></div>
-        <div class="shields" id="player-shield"></div>
-      </div>
-      <div class="hand" id="player-hand" aria-label="Your hand"></div>
-    </div>
-  </div>
-
-  <div id="bottombar" class="hidden">
-    <div id="mana"><span class="mana-label"></span></div>
-    <span id="turn-label"></span>
-    <div id="controls">
-      <button id="play-card">Play Selected Card</button>
-      <button id="end-turn">End Turn ⏎</button>
-      <button id="mute" class="ghost">🔊 Sound on</button>
-    </div>
-  </div>
-
-  <p id="status" role="status" aria-live="polite"></p>
-  <pre id="selftest" style="display:none"></pre>
-</div>
-<script type="module" src="./src/main.js"></script>
+  <div id="app"></div>
+  <noscript>Scrapheap Showdown needs JavaScript to run.</noscript>
+  <script type="module" src="src/main.js"></script>
 </body>
 </html>
