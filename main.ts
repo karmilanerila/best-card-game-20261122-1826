@@ -1,42 +1,69 @@
-// main.ts — the hand-in program for Scrapheap Showdown.
-// It copies game/ and screenshots/ from this repository into the output
-// directory and writes /output/dossier.json with buildDossier from the
-// kit's vendor/makefun-game.ts (unchanged). It runs twice under the
-// grader and both runs must write the same bytes, so there is no clock,
-// no randomness and no network here: plain recursive copies, then the
-// dossier. The output directory is /output, or MAKEFUN_OUTPUT_DIR when
-// the platform sets it (local runs use that to keep /output out of the way).
+// main.ts — hand-in for Scrapheap Showdown (round 3 fix).
+//
+// Copies game/ and screenshots/ from this repo into the output directory
+// and writes dossier.json there, using buildDossier from the kit's
+// vendor/makefun-game.ts (unchanged). The program must run twice under
+// the grader and produce identical bytes both times, so there is no
+// clock, no randomness and no network: plain recursive copies, then the
+// dossier, then a one-line receipt on stdout.
+//
+// One deliberate rule: the output directory itself is NEVER deleted.
+// In the grader /output is a mounted volume, and removing a mount point
+// fails (EBUSY) and aborts the run. We only create it if missing
+// (mkdirSync with recursive:true is a no-op when it already exists),
+// then copy into it. That matches the round-1 program, which passed.
 
 import { buildDossier } from './vendor/makefun-game.ts';
-import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-const rootDir = new URL('.', import.meta.url).pathname;
+const outputDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+const repoRoot = dirname(fileURLToPath(import.meta.url));
 
-function handIn(): void {
-  // Start from an empty output directory so a second run cannot leave
-  // stale files behind and diverge from the first.
-  rmSync(outDir, { recursive: true, force: true });
-  mkdirSync(outDir, { recursive: true });
+const DOSSIER_CAPS = {
+  text_max_bytes: 163840,
+  screenshots: { max: 4, max_bytes: 262144 },
+  game_max_files: 993,
+  game_max_bytes: 50331648,
+} as const;
 
-  const gameSrc = join(rootDir, 'game');
-  const shotsSrc = join(rootDir, 'screenshots');
-  if (!existsSync(gameSrc)) throw new Error('game/ is missing from the repository');
-  if (!existsSync(shotsSrc)) throw new Error('screenshots/ is missing from the repository');
-
-  cpSync(gameSrc, join(outDir, 'game'), { recursive: true });
-  cpSync(shotsSrc, join(outDir, 'screenshots'), { recursive: true });
-
-  const dossier = buildDossier(outDir, {
-    text_max_bytes: 163840,
-    screenshots: { max: 4, max_bytes: 262144 },
-    game_max_files: 993,
-    game_max_bytes: 50331648,
-  });
-  writeFileSync(join(outDir, 'dossier.json'), dossier);
-  // A one-line receipt on stdout: what was handed in and how big it is.
-  console.log(`handed in ${outDir} (dossier ${dossier.length} bytes)`);
+function copyInputs(): void {
+  const gameDir = join(repoRoot, 'game');
+  const shotsDir = join(repoRoot, 'screenshots');
+  if (!existsSync(gameDir)) {
+    throw new Error(`game/ is missing from the repository at ${gameDir}`);
+  }
+  if (!existsSync(shotsDir)) {
+    throw new Error(`screenshots/ is missing from the repository at ${shotsDir}`);
+  }
+  cpSync(gameDir, join(outputDir, 'game'), { recursive: true });
+  cpSync(shotsDir, join(outputDir, 'screenshots'), { recursive: true });
 }
 
-handIn();
+function verifyHandIn(): void {
+  // Read the dossier back and confirm it parses and lists handed-in
+  // files, so a partial write cannot slip by. (No byte comparison here:
+  // buildDossier returns bytes, and a second call would see the file
+  // it just wrote, so only a structural check is valid.)
+  const onDisk = readFileSync(join(outputDir, 'dossier.json'), 'utf8');
+  const dossier = JSON.parse(onDisk) as { images?: unknown[]; text?: unknown };
+  if (!Array.isArray(dossier.images) || dossier.images.length === 0) {
+    throw new Error('dossier.json lists no screenshots');
+  }
+  if (typeof dossier.text !== 'string' || dossier.text.length === 0) {
+    throw new Error('dossier.json has no text section');
+  }
+}
+
+function main(): void {
+  // Create the output directory if it is not there yet; never remove it.
+  mkdirSync(outputDir, { recursive: true });
+  copyInputs();
+  const dossier = buildDossier(outputDir, DOSSIER_CAPS);
+  writeFileSync(join(outputDir, 'dossier.json'), dossier);
+  verifyHandIn();
+  console.log(`handed in ${outputDir} (dossier ${dossier.length} bytes)`);
+}
+
+main();
