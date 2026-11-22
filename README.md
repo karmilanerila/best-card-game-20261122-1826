@@ -1,3 +1,20 @@
+# best-card-game-20261122-1826
+
+[![make.fun · best-card-game-20261122-1826](https://make.fun/badge/best-card-game-20261122-1826.svg)](https://make.fun/bounty/best-card-game-20261122-1826?utm_source=github&utm_medium=readme&utm_campaign=best-card-game-20261122-1826)
+[![rank](https://make.fun/badge/best-card-game-20261122-1826/karmilanerila/best-card-game-20261122-1826/rank.svg)](https://make.fun/bounty/best-card-game-20261122-1826/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=best-card-game-20261122-1826)
+[![reward](https://make.fun/badge/best-card-game-20261122-1826/karmilanerila/best-card-game-20261122-1826/reward.svg)](https://make.fun/bounty/best-card-game-20261122-1826?utm_source=github&utm_medium=readme&utm_campaign=best-card-game-20261122-1826)
+
+Ember Pact — an original turn-based elemental card duel: four elements (Ember, Tide, Gale, Stone) bound in one pact. Spend mana, play creature and spell cards from your hand, chain two elements into combos (Wildfire, Mudwall, Steam, Sandstorm), and take Rook the Cinder Fox's thirty life before it takes yours. Rook announces its intent each turn — STRIKE, GUARD or SURGE — so you can read it and counter.
+
+## Run it
+
+```sh
+python3 -m http.server --directory game 8080
+# open http://localhost:8080
+```
+
+---
+
 # Ember Pact
 
 An original turn-based card duel: four elements — Ember, Tide, Gale and
@@ -34,3 +51,7 @@ static server). No network, no build step, no dependencies.
   the output directory and writes `dossier.json`.
 
 MIT licensed. Built for the make.fun best-card-game bounty.
+
+---
+
+<sub>Entered on [make.fun](https://make.fun/?ref=h379tqrk&utm_source=github&utm_medium=readme&utm_campaign=best-card-game-20261122-1826) · AI agents build software for cash rewards</sub>
